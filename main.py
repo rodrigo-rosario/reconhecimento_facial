@@ -3,53 +3,62 @@ import shutil
 import cv2
 import numpy as np
 from services.face_recognition import extract_embeddings
-from services.image_processing import validate_image
-from config import STORAGE_DIR, MAX_FILE_SIZE_MB
-import logging
+from services.google_drive import get_folder_id, list_images_in_folder, MAIN_FOLDER_ID
+import requests
 
 app = FastAPI()
 
-# Configuração de logging
-logging.basicConfig(filename="logs/app.log", level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-@app.post("/upload-selfie")
-async def upload_selfie(file: UploadFile = File(...)):
+@app.post("/upload-selfie/")
+async def upload_selfie(file: UploadFile = File(...), event: str = "Casamento", month_year: str = "02-2025"):
     """
-    Endpoint para upload de selfie, validação e extração de embeddings.
+    Recebe a selfie, identifica a pasta no Google Drive e busca as imagens correspondentes para comparação.
     """
     try:
-        # Verificar tipo de arquivo
-        if not file.content_type.startswith("image/"):
-            logging.warning(f"Arquivo inválido: {file.filename}")
-            raise HTTPException(status_code=400, detail="Apenas arquivos de imagem são permitidos.")
-        
-        # Verificar tamanho do arquivo
-        file_size_mb = len(file.file.read()) / (1024 * 1024)
-        file.file.seek(0)  # Resetar leitura do arquivo
-        if file_size_mb > MAX_FILE_SIZE_MB:
-            logging.warning(f"Arquivo muito grande: {file.filename} ({file_size_mb:.2f}MB)")
-            raise HTTPException(status_code=400, detail=f"O arquivo não pode exceder {MAX_FILE_SIZE_MB}MB.")
-        
-        # Caminho temporário para armazenar a imagem
-        temp_path = STORAGE_DIR / file.filename
-        
-        # Salvando a imagem
-        with temp_path.open("wb") as buffer:
+        # Salvar temporariamente a selfie
+        temp_path = f"storage/{file.filename}"
+        with open(temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        
-        # Validar imagem
-        image = cv2.imread(str(temp_path))
-        if not validate_image(image):
-            raise HTTPException(status_code=400, detail="Imagem inválida ou corrompida.")
-        
-        # Extraindo os embeddings faciais
-        embeddings = extract_embeddings(image)
-        if embeddings.size == 0:
-            raise HTTPException(status_code=400, detail="Nenhum rosto detectado na imagem.")
-        
-        logging.info(f"Selfie processada com sucesso: {file.filename}")
-        return {"message": "Selfie processada com sucesso", "embeddings": embeddings.tolist()}
+
+        # Carregar imagem e extrair embeddings
+        image = cv2.imread(temp_path)
+        selfie_embeddings = extract_embeddings(image)
+
+        if selfie_embeddings.size == 0:
+            raise HTTPException(status_code=400, detail="Nenhum rosto detectado na selfie.")
+
+        # Buscar a pasta correta no Google Drive
+        category_id = get_folder_id(event, MAIN_FOLDER_ID)
+        if not category_id:
+            return {"error": f"Categoria '{event}' não encontrada."}
+
+        folder_id = get_folder_id(f"{event} {month_year}", category_id)
+        if not folder_id:
+            return {"error": f"Nenhuma subpasta encontrada para '{event} {month_year}'."}
+
+        # Listar imagens da pasta
+        images = list_images_in_folder(folder_id)
+        if not images:
+            return {"error": f"Nenhuma imagem encontrada na pasta '{event} {month_year}'."}
+
+        # Comparar selfies com imagens do Drive
+        matched_images = []
+        for img in images:
+            img_url = img["webContentLink"]
+            
+            # Baixar a imagem do Google Drive
+            img_response = requests.get(img_url)
+            if img_response.status_code == 200:
+                img_array = np.asarray(bytearray(img_response.content), dtype=np.uint8)
+                img_cv = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+
+                # Extrair embeddings e comparar
+                img_embeddings = extract_embeddings(img_cv)
+                if img_embeddings.size > 0:
+                    similarity = np.dot(selfie_embeddings, img_embeddings)  # Similaridade por produto interno
+                    if similarity > 0.6:  # Limiar de similaridade
+                        matched_images.append(img_url)
+
+        return {"message": "Selfie processada com sucesso", "matched_images": matched_images}
 
     except Exception as e:
-        logging.error(f"Erro ao processar imagem: {str(e)}")
-        raise HTTPException(status_code=500, detail="Erro interno ao processar a imagem.")
+        return {"error": str(e)}
