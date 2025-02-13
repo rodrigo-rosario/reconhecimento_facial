@@ -2,10 +2,10 @@ import os
 from pathlib import Path
 import logging
 
-# Definir caminho base do projeto (pode ser ajustado por variável de ambiente)
+# Definir caminho base do projeto (ajustável por variável de ambiente)
 BASE_DIR = Path(os.getenv("BASE_DIR", Path(__file__).resolve().parent))
 
-# Diretório para armazenar arquivos temporários (pode ser configurável)
+# Diretório para armazenar arquivos temporários (ajustável)
 STORAGE_DIR = Path(os.getenv("STORAGE_DIR", BASE_DIR / "storage"))
 LOG_DIR = Path(os.getenv("LOG_DIR", BASE_DIR / "logs"))
 
